@@ -3,14 +3,20 @@ UNITDIR ?= $(PREFIX)/lib/systemd/system
 CFLAGS ?= -O2 -g
 CFLAGS += -Wall -Wextra -std=gnu11
 
-aurora-kbd-light: aurora-kbd-light.c
+PROGRAMS = aurora-kbd-light aurora-display-light
+
+all: $(PROGRAMS)
+
+%: %.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $< -lm
 
-install: aurora-kbd-light
-	install -Dm0755 aurora-kbd-light $(DESTDIR)$(PREFIX)/bin/aurora-kbd-light
-	install -Dm0644 aurora-kbd-light.service $(DESTDIR)$(UNITDIR)/aurora-kbd-light.service
+install: $(PROGRAMS)
+	for p in $(PROGRAMS); do \
+		install -Dm0755 $$p $(DESTDIR)$(PREFIX)/bin/$$p && \
+		install -Dm0644 $$p.service $(DESTDIR)$(UNITDIR)/$$p.service || exit 1; \
+	done
 
 clean:
-	rm -f aurora-kbd-light
+	rm -f $(PROGRAMS)
 
-.PHONY: install clean
+.PHONY: all install clean

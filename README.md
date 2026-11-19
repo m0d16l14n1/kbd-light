@@ -43,13 +43,15 @@ Set these in `/etc/default/aurora-kbd-light`:
   A change of light during a ramp restarts it from where the screen is.
 - **Learns:** a brightness you pick (the desktop's slider or the brightness keys) moves the line through it:
   - in a room darker than `PIVOT_LUX` (78.5 lx) the dark end moves;
-  - in a brighter room the bright end moves.
+  - in a brighter room the bright end moves;
+  - where the dark end would go below `MIN_NITS`, the bright end moves instead.
 
-  The line never falls as the light rises. It is saved in `/var/lib/aurora-display-light/curve`; delete that file to go
+  The line then gives exactly the level you picked, there. It never falls as the light rises. It is saved in `/var/lib/aurora-display-light/curve`; delete that file to go
   back to the factory line.
 - **Respects other changes:** idle dimming, or the level a desktop restores when a session starts, holds until it
   returns to the automatic level or the light changes about fourfold. These are not learned. A change counts as yours
-  when a key, the touchpad or a mouse was used in the two seconds before it.
+  when a key, the touchpad or a mouse was used in the two seconds before it. A desktop that animates its changes
+  (KDE steps every ~40 ms) is followed until the level stays for a second; only the level it ends at counts.
 - **Lid and display sleep:** with the lid closed or every display powered off, the panel is left alone.
 
 The backlight's brightness is taken to be in nits, as the Apple DCP driver reports it for the built-in panel (a

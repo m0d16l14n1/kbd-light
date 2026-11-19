@@ -52,6 +52,7 @@
 #define HOLD_RATIO 4.0		/* light change that ends a hold */
 #define USER_INPUT_S 2.0	/* input this recent: a change is the user's */
 #define START_GRACE_S 30.0	/* after start or wake, changes are never learned */
+#define SETTLE_S 1.0		/* someone else's change: wait until the level stays this long */
 #define DISPLAYS_OFF_S 1.0	/* displays dark this long: leave the panel alone */
 #define RESCAN_S 30		/* look for new input devices this often */
 #define MAX_INPUTS 16
@@ -252,7 +253,7 @@ static void close_inputs(void)
 	input_count = 0;
 }
 
-/* Open every keyboard (it has the A key) and pointer (a touch or a left button). */
+/* Open every keyboard (the A key or brightness keys) and pointer (a touch or a left button). */
 static void open_inputs(void)
 {
 	unsigned long bits[(KEY_MAX + LONG_BITS) / LONG_BITS];
@@ -275,7 +276,8 @@ static void open_inputs(void)
 			continue;
 		memset(bits, 0, sizeof(bits));
 		if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(bits)), bits) >= 0 &&
-		    (test_bit(bits, KEY_A) || test_bit(bits, BTN_TOUCH) || test_bit(bits, BTN_LEFT)))
+		    (test_bit(bits, KEY_A) || test_bit(bits, KEY_BRIGHTNESSDOWN) ||
+		     test_bit(bits, BTN_TOUCH) || test_bit(bits, BTN_LEFT)))
 			input_fd[input_count++] = fd;
 		else
 			close(fd);
@@ -404,14 +406,18 @@ static double ramp_length(const struct config *c, double dp)
 }
 
 /*
- * Move the line through (lux, nits). In a dim room the dark end moves and the
- * bright end stays; in a bright room the other way round. The line never falls
- * as the light rises.
+ * Move the line through (lux, nits), so the level the user chose is the one
+ * the line gives there. In a dim room the dark end moves and the bright end
+ * stays; in a bright room the other way round. The line never falls as the
+ * light rises, and its dark end never goes below the panel's darkest level:
+ * where the dark end would, the bright end moves instead.
  */
 static void learn(const struct config *c, struct curve *k, double lux, double nits)
 {
 	if (lux > MAX_LUX)
 		lux = MAX_LUX;
+	if (nits < c->min_nits)
+		nits = c->min_nits;
 	if (lux <= c->pivot_lux) {
 		double slope = (k->l2 - nits) / (c->ref_lux - lux);
 
@@ -429,8 +435,11 @@ static void learn(const struct config *c, struct curve *k, double lux, double ni
 		}
 		k->l2 = k->l1 + slope * c->ref_lux;
 	}
-	if (k->l1 < c->min_nits)
+	if (k->l1 < c->min_nits) {
+		/* pivot on the darkest level instead (lux > 0 here: at 0 lx l1 is the point) */
 		k->l1 = c->min_nits;
+		k->l2 = c->min_nits + (nits - c->min_nits) * c->ref_lux / lux;
+	}
 }
 
 static void state_path(char *buf, size_t len)
@@ -488,7 +497,8 @@ int main(int argc, char **argv)
 	double lux = NAN, shown = -1, hold_lux = 0, last_input = -1e9, grace_until;
 	double lid_retry_t, scan_t, sample_t = 0, dark_since = -1, suspended;
 	long max, cur, written = -1, auto_last = -1;
-	bool hold = false;
+	double ext_t = -1;	/* someone else's change in progress: when the level last moved */
+	bool hold = false, ext_user = false;
 	int lid_fd;
 
 	for (int i = 1; i < argc; i++)
@@ -548,6 +558,7 @@ int main(int argc, char **argv)
 			grace_until = t + START_GRACE_S;
 			written = -1;
 			hold = false;
+			ext_t = -1;
 			r.active = false;
 		}
 		suspended = s;
@@ -560,6 +571,7 @@ int main(int argc, char **argv)
 		if (dark || read_int(bright_path, &cur) || cur <= 0) {
 			/* Off, or the panel is dark: leave it, and take the level as found after. */
 			written = -1;
+			ext_t = -1;
 			r.active = false;
 			wait_ms(SAMPLE_MS, &last_input);
 			continue;
@@ -577,17 +589,32 @@ int main(int argc, char **argv)
 			continue;
 		}
 
-		/* Someone else set the level. */
+		/*
+		 * Someone else set the level. A desktop animates its own changes (KDE
+		 * steps every ~40 ms for a second or so): follow the level until it
+		 * stays put, then take the level it ended at, once. It is the user's
+		 * if there was keyboard or pointer input while it moved.
+		 */
 		if (written >= 0 && cur != written) {
-			bool user = t - last_input <= USER_INPUT_S && t >= grace_until;
-
+			if (ext_t < 0)
+				ext_user = false;
+			ext_t = t;
+			ext_user |= t - last_input <= USER_INPUT_S && t >= grace_until;
 			r.active = false;
 			shown = cur;
+			written = cur;
+		}
+		if (ext_t >= 0) {
+			if (t - ext_t < SETTLE_S) {
+				wait_ms(SAMPLE_MS, &last_input);
+				continue;
+			}
+			ext_t = -1;
 			if (cur == auto_last) {
 				hold = false;	/* restored after idle dimming */
 				if (c.verbose)
 					fprintf(stderr, "restored to %ld: automatic\n", cur);
-			} else if (user && c.learn) {
+			} else if (ext_user && c.learn) {
 				learn(&c, &k, lux, cur);
 				save_curve(&k);
 				hold = false;
@@ -600,7 +627,6 @@ int main(int argc, char **argv)
 				if (c.verbose)
 					fprintf(stderr, "set to %ld by someone else at %.1f lx: holding\n", cur, lux);
 			}
-			written = cur;
 		}
 		if (written < 0) {
 			written = cur;	/* start from what is set */
